@@ -1,35 +1,50 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import { Link, NavLink, Outlet } from "react-router-dom";
+import { Button } from "./components/ui/button";
+import { ThemeToggle } from "./components/primitives/theme-toggle";
 
-function App() {
-  const [count, setCount] = useState(0)
-
+function Header() {
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+    <header className="sticky top-0 z-40 w-full border-b bg-background">
+      <div className="mx-auto flex max-w-7xl items-center justify-between px-4 md:px-6 py-3">
+        <Link to="/dashboard" className="font-semibold">
+          ケア記録
+        </Link>
+        <nav className="flex items-center gap-2">
+          <NavLink
+            to="/dashboard"
+            className={({ isActive }: { isActive: boolean }) =>
+              isActive ? "text-primary" : "text-muted-foreground"
+            }
+          >
+            ダッシュボード
+          </NavLink>
+          <NavLink
+            to="/settings"
+            className={({ isActive }: { isActive: boolean }) =>
+              isActive ? "text-primary" : "text-muted-foreground"
+            }
+          >
+            設定
+          </NavLink>
+          <Button asChild variant="secondary" size="sm">
+            <Link to="/review/new">レビュー</Link>
+          </Button>
+          <ThemeToggle />
+        </nav>
       </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
-  )
+    </header>
+  );
 }
 
-export default App
+export default function AppLayout() {
+  return (
+    <div className="min-h-full">
+      <Header />
+      <main className="mx-auto max-w-7xl px-4 md:px-6 py-6">
+        <Outlet />
+      </main>
+    </div>
+  );
+}
+
+ 

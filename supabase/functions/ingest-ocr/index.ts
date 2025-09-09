@@ -8,18 +8,45 @@ const GCP_VISION_API_KEY = Deno.env.get("GCP_VISION_API_KEY")!;
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
+function getCorsHeaders(req: Request) {
+  const origin = req.headers.get("origin") ?? "*";
+  const allowed = new Set([
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    Deno.env.get("APP_ORIGIN") ?? "",
+  ]);
+  const allowOrigin = allowed.has(origin) ? origin : "*";
+  return {
+    "Access-Control-Allow-Origin": allowOrigin,
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    Vary: "Origin",
+  } as const;
+}
+
 serve(async (req) => {
+  const corsHeaders = getCorsHeaders(req);
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
   try {
     let payload: { storagePath?: string; sourceDocId?: string } | null = null;
     try {
       payload = await req.json();
     } catch (_) {
-      return new Response("Invalid JSON body", { status: 400 });
+      return new Response("Invalid JSON body", {
+        status: 400,
+        headers: corsHeaders,
+      });
     }
 
     const { storagePath, sourceDocId } = payload ?? {};
     if (!storagePath)
-      return new Response("storagePath required", { status: 400 });
+      return new Response("storagePath required", {
+        status: 400,
+        headers: corsHeaders,
+      });
 
     // source_docs を用意
     let docId = sourceDocId;
@@ -68,13 +95,13 @@ serve(async (req) => {
     if (upErr) throw upErr;
 
     return new Response(JSON.stringify({ ok: true, sourceDocId: docId }), {
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...corsHeaders },
     });
   } catch (e) {
     console.error(e);
     return new Response(JSON.stringify({ ok: false, error: String(e) }), {
       status: 500,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...corsHeaders },
     });
   }
 });

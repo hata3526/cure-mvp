@@ -1,69 +1,62 @@
-# React + TypeScript + Vite
+# Care MVP
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Vite + React + TypeScript app with Tailwind CSS, shadcn/ui, React Router v6, React Query, and Supabase JS v2.
 
-Currently, two official plugins are available:
+## Getting Started
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+1. Install deps
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default tseslint.config([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      ...tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      ...tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      ...tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+pnpm i
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+2. Configure env
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+Create `.env` and set:
 
-export default tseslint.config([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
 ```
+VITE_SUPABASE_URL=your-url
+VITE_SUPABASE_ANON_KEY=your-anon-key
+```
+
+3. Dev server
+
+```bash
+pnpm dev
+```
+
+## Tech
+
+- Vite + React + TypeScript
+- Tailwind CSS + minimal shadcn/ui primitives
+- React Router v6, React Query (@tanstack)
+- Supabase JS v2 (DB + Edge Functions)
+
+## Tailwind + shadcn setup
+
+- `tailwind.config.ts`, `postcss.config.js` present
+- `src/index.css` includes `@tailwind base; @tailwind components; @tailwind utilities;`
+- UI primitives under `src/components/ui/` (Button, Card, Dialog, Input, Select, Label, Checkbox)
+
+## Environment Variables
+
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_ANON_KEY`
+
+## Data Model
+
+See `src/types.ts` and queries in `src/lib/queries.ts`.
+
+## Supabase Edge Functions
+
+- POST `/functions/v1/ingest-ocr` { storagePath }
+- POST `/functions/v1/parse-structure` { sourceDocId }
+
+The UI triggers these via Supabase client `.functions.invoke()`.
+
+## Usage Flow
+
+1. Review → Ingest OCR → Parse → Review grid
+2. Edit cells and Save → Upsert `care_events`
+3. Dashboard shows totals and heatmap
+4. Export CSV reflects current date filter
