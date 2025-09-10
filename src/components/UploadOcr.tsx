@@ -1,7 +1,8 @@
 import { useRef, useState } from "react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { useIngestOcr, useParseStructure } from "../lib/queries";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "./ui/select";
+import { useIngest, useParseStructure } from "../lib/queries";
 import { supabase } from "../lib/supabase";
 
 /** UploadOcr provides buttons for OCR → Parse → Review flow. */
@@ -14,15 +15,16 @@ export function UploadOcr({
 }) {
   const [storagePath, setStoragePath] = useState("images/2025-01-01/sheet.jpg");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const ingest = useIngestOcr();
+  const ingest = useIngest();
   const parse = useParseStructure();
+  const [provider, setProvider] = useState<"vision" | "gpt">("vision");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [publicUrl, setPublicUrl] = useState<string | null>(null);
 
   const handleIngest = async () => {
     try {
-      await ingest.mutateAsync({ storagePath });
+      await ingest.mutateAsync({ storagePath, provider });
     } catch {
       void 0;
     }
@@ -130,15 +132,27 @@ export function UploadOcr({
         <Button variant="outline" onClick={handlePickAndUpload}>
           ファイル選択
         </Button>
+        <div className="w-48 space-y-1">
+          <label className="text-sm text-muted-foreground">プロバイダ</label>
+          <Select value={provider} onValueChange={(v) => setProvider(v as any)}>
+            <SelectTrigger>
+              <SelectValue placeholder="選択" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="vision">Google Vision OCR</SelectItem>
+              <SelectItem value="gpt">GPT Vision (抽出まで)</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
         <Button
           onClick={handleIngest}
           disabled={ingest.isPending || !storagePath.includes("/")}
         >
-          {ingest.isPending ? "取り込み中..." : "OCR取り込み"}
+          {ingest.isPending ? "取り込み中..." : provider === "gpt" ? "取り込み+解析" : "OCR取り込み"}
         </Button>
         <Button
           onClick={handleParse}
-          disabled={parse.isPending || !lastSourceDocId()}
+          disabled={parse.isPending || !lastSourceDocId() || provider === "gpt"}
           variant="secondary"
         >
           {parse.isPending ? "解析中..." : "解析"}

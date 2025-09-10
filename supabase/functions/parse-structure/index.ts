@@ -9,7 +9,18 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY")!;
+const OPENAI_VISION_MODEL = Deno.env.get("OPENAI_VISION_MODEL") ?? "gpt-4o-mini";
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+const LLM_HIGH_ACCURACY =
+  (Deno.env.get("LLM_HIGH_ACCURACY") ?? "false").toLowerCase() === "true";
+const LLM_MAX_TOKENS = Number.isFinite(
+  parseInt(Deno.env.get("LLM_MAX_TOKENS") ?? "")
+)
+  ? parseInt(Deno.env.get("LLM_MAX_TOKENS") ?? "", 10)
+  : undefined;
+const LLM_N = Number.isFinite(parseInt(Deno.env.get("LLM_N") ?? ""))
+  ? Math.max(1, Math.min(5, parseInt(Deno.env.get("LLM_N") ?? "", 10)))
+  : undefined;
 
 // ========= Utils =========
 
@@ -194,11 +205,16 @@ async function callModel(
     "date_iso は見出しに『YYYY 年 M 月 D 日』があればそれを優先、無ければ既定日を使ってください。",
     `既定日: ${sheetHintISO}`,
     "推測での補完は禁止。ただし読み取れた範囲で部分的な行でも出力してください。",
+    "各入居者は『排便』『排尿』『水分』の3行が1セットで並び、各カテゴリ行の右方向に 0..23 の時間列が続きます。",
+    "0..23 の各列について、セルが空でない場合は必ず events に 1 件として出力してください（空欄は出力しない）。",
+    "『合計』『計』『凡例』などの見出し列・右端の合計列は events に含めないでください。",
+    "名前はグリッド左側の氏名欄から取得し、同じ入居者の全カテゴリ行に継承してください。",
+    "返答はデータ本体の JSON のみ。説明文・コードブロック・スキーマ定義は返さないでください。",
   ].join("\n");
 
   const user = [
-    "次のOCR結果（平文+JSON抜粋）から、入居者ごとの『排尿・排便・水分』× 時刻(0〜23)のセルを events にしてください。",
-    "表として読み取れない場合は、改行やスペースから行列を推定して、分かる部分だけ出力してください。",
+    "次のOCR結果（平文+JSON抜粋）から、入居者ごとの『排便』『排尿』『水分』× 時刻(0〜23)の空でないセルをすべて events にしてください。",
+    "表として読み取れない場合は、改行やスペースから行列を推定して、分かる部分だけ出力してください。合計や凡例は無視。",
     "",
     "【平文】",
     promptText,
@@ -207,18 +223,22 @@ async function callModel(
     JSON.stringify(ocr_json).slice(0, 8000),
   ].join("\n");
 
-  const body = {
-    model: "gpt-5",
+  const supportsCustomTemperature = !/^gpt-5/i.test(OPENAI_VISION_MODEL);
+  const body: any = {
+    model: OPENAI_VISION_MODEL,
     response_format: {
       type: "json_schema",
       json_schema: { name: "CareSheet", schema: SCHEMA },
     },
-    temperature: 0.1,
     messages: [
       { role: "system", content: system },
       { role: "user", content: user },
     ],
   };
+  if (supportsCustomTemperature) body.temperature = 0.1;
+  if (LLM_HIGH_ACCURACY && (LLM_MAX_TOKENS || 1))
+    body.max_tokens = LLM_MAX_TOKENS ?? 8192;
+  if (LLM_HIGH_ACCURACY && (LLM_N || 0) > 1) body.n = LLM_N ?? 3;
 
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -229,6 +249,32 @@ async function callModel(
     body: JSON.stringify(body),
   }).then((r) => r.json());
 
+  // Aggregate choices (prefer more events)
+  const choices: any[] = Array.isArray(res?.choices) ? res.choices : [];
+  if (choices.length > 1) {
+    let best: any = {};
+    let bestScore = -1;
+    for (const c of choices) {
+      const t = c?.message?.content ?? "";
+      let p: any = {};
+      try {
+        p = t ? JSON.parse(t) : {};
+      } catch {
+        p = {};
+      }
+      const ev = Array.isArray(p?.events)
+        ? p.events
+        : Array.isArray(p?.properties?.events)
+        ? p.properties.events
+        : [];
+      const score = Array.isArray(ev) ? ev.length : 0;
+      if (score > bestScore) {
+        bestScore = score;
+        best = p;
+      }
+    }
+    return best;
+  }
   const content = res?.choices?.[0]?.message?.content ?? "{}";
   return JSON.parse(content);
 }

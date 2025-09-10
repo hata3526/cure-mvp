@@ -50,9 +50,24 @@ See `src/types.ts` and queries in `src/lib/queries.ts`.
 ## Supabase Edge Functions
 
 - POST `/functions/v1/ingest-ocr` { storagePath }
+- POST `/functions/v1/ingest-gpt` { storagePath }
 - POST `/functions/v1/parse-structure` { sourceDocId }
 
 The UI triggers these via Supabase client `.functions.invoke()`.
+
+### Provider switching
+
+In `UploadOcr`, you can choose the OCR/extraction provider:
+
+- Google Vision OCR: performs OCR only; then click "解析" to run `parse-structure`.
+- GPT Vision: performs ingestion + extraction in one step; the "解析" button is disabled as it inserts rows directly.
+
+Environment variables (Edge Functions):
+
+- `SUPABASE_URL`
+- `SERVICE_ROLE_KEY` (or `SUPABASE_SERVICE_ROLE_KEY` depending on your env naming)
+- `GCP_VISION_API_KEY` (for `ingest-ocr`)
+- `OPENAI_API_KEY` (for `ingest-gpt`)
 
 ## Usage Flow
 

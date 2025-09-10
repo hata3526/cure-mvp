@@ -136,13 +136,28 @@ export function useUpsertCareEvents() {
   });
 }
 
-/** Call Edge Function: ingest-ocr */
-export function useIngestOcr() {
+/** Call Edge Function: ingest (provider switchable) */
+export function useIngest() {
   return useMutation({
     mutationFn: async (payload: {
       storagePath: string;
       sourceDocId?: string;
+      provider: "vision" | "gpt";
     }) => {
+      const fn = payload.provider === "gpt" ? "ingest-gpt" : "ingest-ocr";
+      const { data, error } = await supabase.functions.invoke(fn, {
+        body: { storagePath: payload.storagePath, sourceDocId: payload.sourceDocId },
+      });
+      if (error) throw error;
+      return data as { ok: boolean; sourceDocId?: string; inserted?: number };
+    },
+  });
+}
+
+/** Backward-compatible: Vision only */
+export function useIngestOcr() {
+  return useMutation({
+    mutationFn: async (payload: { storagePath: string; sourceDocId?: string }) => {
       const { data, error } = await supabase.functions.invoke("ingest-ocr", {
         body: payload,
       });
