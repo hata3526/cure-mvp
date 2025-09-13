@@ -26,3 +26,8 @@ export type HeatCell = {
 export type DateRange = { from: string; to: string };
 
 export type Resident = { id: string; full_name: string };
+
+export type SourceDoc = {
+  id: string;
+  storage_path: string | null;
+};

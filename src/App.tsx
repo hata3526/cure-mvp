@@ -19,6 +19,14 @@ function Header() {
             ダッシュボード
           </NavLink>
           <NavLink
+            to="/import"
+            className={({ isActive }: { isActive: boolean }) =>
+              isActive ? "text-primary" : "text-muted-foreground"
+            }
+          >
+            取り込み
+          </NavLink>
+          <NavLink
             to="/settings"
             className={({ isActive }: { isActive: boolean }) =>
               isActive ? "text-primary" : "text-muted-foreground"

@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "./supabase";
-import type { CareEvent, DateRange, HeatCell, Resident } from "../types";
+import type { CareEvent, DateRange, HeatCell, Resident, SourceDoc } from "../types";
 
 // Keys
 const qk = {
@@ -8,6 +8,7 @@ const qk = {
   totals: (range: DateRange) => ["totals", range] as const,
   heatmap: (range: DateRange) => ["heatmap", range] as const,
   review: (sourceDocId: string) => ["review", sourceDocId] as const,
+  sourceDoc: (id: string) => ["sourceDoc", id] as const,
 };
 
 /** Fetch residents list */
@@ -117,6 +118,37 @@ export function useReviewRows(sourceDocId: string) {
   });
 }
 
+/** Fetch single source doc and derive a URL for preview */
+export function useSourceDoc(id: string) {
+  return useQuery({
+    queryKey: qk.sourceDoc(id),
+    enabled: !!id,
+    queryFn: async (): Promise<{ doc: SourceDoc; url: string | null }> => {
+      const { data, error } = await supabase
+        .from("source_docs")
+        .select("id, storage_path")
+        .eq("id", id)
+        .single();
+      if (error) throw error;
+      const doc = data as SourceDoc;
+      if (!doc?.storage_path) return { doc, url: null };
+      const [bucket, ...rest] = doc.storage_path.split("/");
+      const path = rest.join("/");
+      // Prefer a signed URL; fall back to public URL if bucket is public
+      try {
+        const { data: signed, error: signErr } = await supabase.storage
+          .from(bucket)
+          .createSignedUrl(path, 60 * 60);
+        if (!signErr) return { doc, url: signed?.signedUrl ?? null };
+      } catch (_) {
+        // ignore
+      }
+      const { data: pub } = supabase.storage.from(bucket).getPublicUrl(path);
+      return { doc, url: pub?.publicUrl ?? null };
+    },
+  });
+}
+
 /** Upsert care_events diff */
 export function useUpsertCareEvents() {
   const qc = useQueryClient();
@@ -143,10 +175,15 @@ export function useIngest() {
       storagePath: string;
       sourceDocId?: string;
       provider: "vision" | "gpt";
+      model?: "gpt-5-mini" | "gpt-5" | "gpt-5-nano" | "gpt-4o" | "gpt-4o-mini";
     }) => {
       const fn = payload.provider === "gpt" ? "ingest-gpt" : "ingest-ocr";
       const { data, error } = await supabase.functions.invoke(fn, {
-        body: { storagePath: payload.storagePath, sourceDocId: payload.sourceDocId },
+        body: {
+          storagePath: payload.storagePath,
+          sourceDocId: payload.sourceDocId,
+          model: payload.model,
+        },
       });
       if (error) throw error;
       return data as { ok: boolean; sourceDocId?: string; inserted?: number };
@@ -157,7 +194,10 @@ export function useIngest() {
 /** Backward-compatible: Vision only */
 export function useIngestOcr() {
   return useMutation({
-    mutationFn: async (payload: { storagePath: string; sourceDocId?: string }) => {
+    mutationFn: async (payload: {
+      storagePath: string;
+      sourceDocId?: string;
+    }) => {
       const { data, error } = await supabase.functions.invoke("ingest-ocr", {
         body: payload,
       });
@@ -170,7 +210,10 @@ export function useIngestOcr() {
 /** Call Edge Function: parse-structure */
 export function useParseStructure() {
   return useMutation({
-    mutationFn: async (payload: { sourceDocId: string }) => {
+    mutationFn: async (payload: {
+      sourceDocId: string;
+      model?: "gpt-5-mini" | "gpt-5" | "gpt-5-nano" | "gpt-4o" | "gpt-4o-mini";
+    }) => {
       const { data, error } = await supabase.functions.invoke(
         "parse-structure",
         {
@@ -179,6 +222,33 @@ export function useParseStructure() {
       );
       if (error) throw error;
       return data as { ok: boolean; inserted?: number };
+    },
+  });
+}
+
+/** Delete a single care_event by composite key */
+export function useDeleteCareEvent() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (key: {
+      source_doc_id: string;
+      resident_name: string;
+      event_date: string;
+      hour: number;
+      category: CareEvent["category"];
+    }): Promise<void> => {
+      const { error } = await supabase
+        .from("care_events")
+        .delete()
+        .eq("source_doc_id", key.source_doc_id)
+        .eq("resident_name", key.resident_name)
+        .eq("event_date", key.event_date)
+        .eq("hour", key.hour)
+        .eq("category", key.category);
+      if (error) throw error;
+    },
+    onSuccess: async (_d, variables) => {
+      await qc.invalidateQueries({ queryKey: qk.review(variables.source_doc_id) });
     },
   });
 }

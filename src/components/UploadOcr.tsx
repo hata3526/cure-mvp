@@ -1,7 +1,13 @@
 import { useRef, useState } from "react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "./ui/select";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "./ui/select";
 import { useIngest, useParseStructure } from "../lib/queries";
 import { supabase } from "../lib/supabase";
 
@@ -18,13 +24,16 @@ export function UploadOcr({
   const ingest = useIngest();
   const parse = useParseStructure();
   const [provider, setProvider] = useState<"vision" | "gpt">("vision");
+  const [model, setModel] = useState<
+    "gpt-5-mini" | "gpt-5" | "gpt-5-nano" | "gpt-4o" | "gpt-4o-mini"
+  >("gpt-4o");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [publicUrl, setPublicUrl] = useState<string | null>(null);
 
   const handleIngest = async () => {
     try {
-      await ingest.mutateAsync({ storagePath, provider });
+      await ingest.mutateAsync({ storagePath, provider, model });
     } catch {
       void 0;
     }
@@ -66,7 +75,7 @@ export function UploadOcr({
   const handleParse = async () => {
     if (!lastSourceDocId()) return;
     try {
-      await parse.mutateAsync({ sourceDocId: lastSourceDocId()! });
+      await parse.mutateAsync({ sourceDocId: lastSourceDocId()!, model });
     } catch {
       void 0;
     }
@@ -144,11 +153,30 @@ export function UploadOcr({
             </SelectContent>
           </Select>
         </div>
+        <div className="w-56 space-y-1">
+          <label className="text-sm text-muted-foreground">GTPモデル</label>
+          <Select value={model} onValueChange={(v) => setModel(v as any)}>
+            <SelectTrigger>
+              <SelectValue placeholder="モデル選択" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="gpt-5-mini">gpt-5-mini</SelectItem>
+              <SelectItem value="gpt-5">gpt-5</SelectItem>
+              <SelectItem value="gpt-5-nano">gpt-5-nano</SelectItem>
+              <SelectItem value="gpt-4o">gpt-4o</SelectItem>
+              <SelectItem value="gpt-4o-mini">gpt-4o-mini</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
         <Button
           onClick={handleIngest}
           disabled={ingest.isPending || !storagePath.includes("/")}
         >
-          {ingest.isPending ? "取り込み中..." : provider === "gpt" ? "取り込み+解析" : "OCR取り込み"}
+          {ingest.isPending
+            ? "取り込み中..."
+            : provider === "gpt"
+            ? "取り込み+解析"
+            : "OCR取り込み"}
         </Button>
         <Button
           onClick={handleParse}

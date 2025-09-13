@@ -9,7 +9,14 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY")!;
-const OPENAI_VISION_MODEL = Deno.env.get("OPENAI_VISION_MODEL") ?? "gpt-4o-mini";
+const OPENAI_VISION_MODEL = Deno.env.get("OPENAI_VISION_MODEL") ?? "gpt-4o";
+const ALLOWED_MODELS = new Set([
+  "gpt-5-mini",
+  "gpt-5",
+  "gpt-5-nano",
+  "gpt-4o",
+  "gpt-4o-mini",
+]);
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 const LLM_HIGH_ACCURACY =
   (Deno.env.get("LLM_HIGH_ACCURACY") ?? "false").toLowerCase() === "true";
@@ -80,6 +87,33 @@ function mapCategoryJPtoEN(s: string): Cat | null {
   if (/(おむつ|ｵﾑﾂ|オムツ|交換|diaper)/i.test(t)) return "diaper_change";
   if (/(備考|メモ|note|観察|所見|コメント|comment)/i.test(t)) return "note";
   return null;
+}
+
+function mapCategoryENtoJP(cat: Cat): string {
+  switch (cat) {
+    case "urination":
+      return "排尿";
+    case "defecation":
+      return "排便";
+    case "fluid":
+      return "水分";
+    default:
+      return String(cat);
+  }
+}
+
+function buildPatientsView(rows: any[], dateISO: string) {
+  const map = new Map<string, { name: string; events: any[] }>();
+  for (const r of rows || []) {
+    const name = r?.resident_name || "";
+    if (!name || !Number.isInteger(r?.hour)) continue;
+    const jp = mapCategoryENtoJP(r?.category as Cat);
+    const ev = { hour: r.hour, category: jp, type: r.category, count: r.count };
+    const cur = map.get(name) ?? { name, events: [] as any[] };
+    cur.events.push(ev);
+    map.set(name, cur);
+  }
+  return { date_iso: dateISO, patients: Array.from(map.values()) };
 }
 
 // ========= 名簿（residents: id, full_name） =========
@@ -162,7 +196,8 @@ function pickResident(
 async function callModel(
   sheetHintISO: string,
   promptText: string,
-  ocr_json: any
+  ocr_json: any,
+  overrideModel?: string | null
 ) {
   const SCHEMA = {
     type: "object",
@@ -223,9 +258,13 @@ async function callModel(
     JSON.stringify(ocr_json).slice(0, 8000),
   ].join("\n");
 
-  const supportsCustomTemperature = !/^gpt-5/i.test(OPENAI_VISION_MODEL);
+  const model =
+    overrideModel && ALLOWED_MODELS.has(overrideModel)
+      ? overrideModel
+      : OPENAI_VISION_MODEL;
+  const supportsCustomTemperature = !/^gpt-5/i.test(model);
   const body: any = {
-    model: OPENAI_VISION_MODEL,
+    model,
     response_format: {
       type: "json_schema",
       json_schema: { name: "CareSheet", schema: SCHEMA },
@@ -343,7 +382,7 @@ function detectCategoryRows(tokens: Token[]): { y: number; cat: Cat }[] {
   }
   return merged;
 }
-function detectResidentNames(tokens: Token[]) {
+function detectResidentNames(tokens: Token[]): { y: number; name: string }[] {
   const nameTokens = tokens.filter(
     (t) => t.x < 180 && /[一-龠々ァ-ヴーA-Za-z]/.test(t.text)
   );
@@ -389,18 +428,18 @@ function geometryFallback(
 
   const cats = detectCategoryRows(tokens);
   const names = detectResidentNames(tokens);
-  const nearest = (y: number, rows: { y: number }[]) => {
-    let best = rows[0],
-      d = Math.abs(y - rows[0].y);
+  function nearest<T extends { y: number }>(y: number, rows: T[]): T {
+    let best = rows[0];
+    let d = Math.abs(y - rows[0].y);
     for (const r of rows) {
       const dd = Math.abs(y - r.y);
       if (dd < d) {
         d = dd;
-        best = r;
+        best = r as T;
       }
     }
     return best;
-  };
+  }
 
   const events: any[] = [];
   const cellToks = tokens.filter((t) => /[0-9✓✔ﾚレ√vV△Δ^]/.test(t.text));
@@ -468,7 +507,7 @@ serve(async (req) => {
     return new Response("ok", { headers: corsHeaders });
   }
   try {
-    const { sourceDocId } = await req.json();
+    const { sourceDocId, model } = await req.json();
     if (!sourceDocId)
       return new Response("sourceDocId required", {
         status: 400,
@@ -495,13 +534,18 @@ serve(async (req) => {
       jpDate ?? inferred ?? toDateISO(new Date(doc?.created_at ?? Date.now()));
 
     // 2) LLM抽出（2回; 後で名簿フィルタ）
-    let parsed = await callModel(sheetHintISO, text, doc?.ocr_json ?? {});
+    let parsed = await callModel(
+      sheetHintISO,
+      text,
+      doc?.ocr_json ?? {},
+      model
+    );
     let events: any[] = Array.isArray(parsed?.events) ? parsed.events : [];
     if (!events.length) {
       const extra =
         text +
         "\n\n※必ず events に1件以上出力してください（分かる範囲で構いません）。";
-      parsed = await callModel(sheetHintISO, extra, doc?.ocr_json ?? {});
+      parsed = await callModel(sheetHintISO, extra, doc?.ocr_json ?? {}, model);
       events = Array.isArray(parsed?.events) ? parsed.events : [];
     }
 
@@ -555,13 +599,16 @@ serve(async (req) => {
           r.event_date &&
           r.resident_name &&
           r.category
-      );
+      ) as any[];
 
     if (!rows.length) {
+      const patientsView = buildPatientsView([], dateISO);
       return new Response(
         JSON.stringify({
           ok: true,
           inserted: 0,
+          date_iso: patientsView.date_iso,
+          patients: patientsView.patients,
           hint: "no rows after roster-filter",
         }),
         { headers: { "Content-Type": "application/json", ...corsHeaders } }
@@ -571,9 +618,18 @@ serve(async (req) => {
     const { error: insErr } = await supabase.from("care_events").insert(rows);
     if (insErr) throw insErr;
 
-    return new Response(JSON.stringify({ ok: true, inserted: rows.length }), {
-      headers: { "Content-Type": "application/json", ...corsHeaders },
-    });
+    const patientsView = buildPatientsView(rows, dateISO);
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        inserted: rows.length,
+        date_iso: patientsView.date_iso,
+        patients: patientsView.patients,
+      }),
+      {
+        headers: { "Content-Type": "application/json", ...corsHeaders },
+      }
+    );
   } catch (e) {
     console.error(e);
     return new Response(JSON.stringify({ ok: false, error: String(e) }), {

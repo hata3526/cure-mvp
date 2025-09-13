@@ -1,15 +1,20 @@
 /// <reference path="../types.d.ts" />
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import Ajv from "https://esm.sh/ajv@8.12.0";
 
 // ---- ENV ----
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SERVICE_ROLE_KEY")!;
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY")!; // GPT Vision 用
-const OPENAI_VISION_MODEL =
-  Deno.env.get("OPENAI_VISION_MODEL") ?? "gpt-4o-mini"; // 既定モデル（上書き可）
-const LLM_HIGH_ACCURACY =
-  (Deno.env.get("LLM_HIGH_ACCURACY") ?? "false").toLowerCase() === "true";
+const OPENAI_VISION_MODEL = Deno.env.get("OPENAI_VISION_MODEL") ?? "gpt-4o"; // 既定モデル（上書き可）
+const ALLOWED_MODELS = new Set([
+  "gpt-5-mini",
+  "gpt-5",
+  "gpt-5-nano",
+  "gpt-4o",
+  "gpt-4o-mini",
+]);
 const LLM_MAX_TOKENS = Number.isFinite(
   parseInt(Deno.env.get("LLM_MAX_TOKENS") ?? "")
 )
@@ -18,6 +23,34 @@ const LLM_MAX_TOKENS = Number.isFinite(
 const LLM_N = Number.isFinite(parseInt(Deno.env.get("LLM_N") ?? ""))
   ? Math.max(1, Math.min(5, parseInt(Deno.env.get("LLM_N") ?? "", 10)))
   : undefined;
+
+// Unified temperature default (used where supported)
+const LLM_TEMPERATURE = (() => {
+  const s = Deno.env.get("LLM_TEMPERATURE");
+  if (s === undefined || s === null || s === "") return 0.1;
+  const v = parseFloat(s);
+  if (!Number.isFinite(v)) return 0.1;
+  return Math.min(2, Math.max(0, v));
+})();
+
+// Reproducibility controls
+const LLM_TOP_P = (() => {
+  const s = Deno.env.get("LLM_TOP_P");
+  if (s === undefined || s === null || s === "") return 0;
+  const v = parseFloat(s);
+  if (!Number.isFinite(v)) return 0;
+  return Math.min(1, Math.max(0, v));
+})();
+
+const LLM_SEED = (() => {
+  const s = Deno.env.get("LLM_SEED");
+  const v = s ? parseInt(s, 10) : NaN;
+  return Number.isFinite(v) ? v : undefined;
+})();
+
+// Explicit gate for multi-sampling (n>1). Default: disabled
+const LLM_ENABLE_MULTI_CHOICE =
+  (Deno.env.get("LLM_ENABLE_MULTI_CHOICE") ?? "false").toLowerCase() === "true";
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
@@ -190,7 +223,11 @@ function extractJsonFromText(text: string): any | null {
   return null;
 }
 
-async function callGptVision(imageUrl: string, sheetHintISO: string) {
+async function callGptVision(
+  imageUrl: string,
+  sheetHintISO: string,
+  overrideModel?: string | null
+) {
   const SCHEMA = {
     type: "object",
     properties: {
@@ -202,6 +239,7 @@ async function callGptVision(imageUrl: string, sheetHintISO: string) {
           facility: { type: ["string", "null"] },
         },
         required: ["date_iso"],
+        additionalProperties: false,
       },
       events: {
         type: "array",
@@ -209,7 +247,10 @@ async function callGptVision(imageUrl: string, sheetHintISO: string) {
           type: "object",
           properties: {
             resident_name: { type: "string" },
-            category: { type: "string" },
+            category: {
+              type: "string",
+              enum: ["urination", "defecation", "fluid"],
+            },
             hour: { type: "integer", minimum: 0, maximum: 23 },
             count: { type: "integer", minimum: 1, default: 1 },
             guided: { type: "boolean", default: false },
@@ -218,12 +259,16 @@ async function callGptVision(imageUrl: string, sheetHintISO: string) {
             confidence: { type: "number", minimum: 0, maximum: 1 },
           },
           required: ["resident_name", "category", "hour", "count"],
+          additionalProperties: false,
         },
       },
     },
     required: ["sheet", "events"],
+    additionalProperties: false,
   } as const;
 
+  const roster = await fetchResidents();
+  const rosterList = roster.map((r: any) => r.display_name).join(", ");
   const system = [
     "あなたは画像から、介護施設の『排尿・排便・水分』記録表を抽出し正規化するアシスタントです。",
     "表は 0〜23 時（24列）です。右端の『合計』列は events に含めないでください。",
@@ -231,6 +276,7 @@ async function callGptVision(imageUrl: string, sheetHintISO: string) {
     "カテゴリ: 排尿→urination、排便→defecation、水分→fluid。必要に応じて note を使ってください。",
     `date_iso は見出しに『YYYY 年 M 月 D 日』があればそれを優先、無ければ既定日(${sheetHintISO})を使ってください。`,
     "推測での補完は禁止。ただし読み取れた範囲で部分的な行でも出力してください。",
+    `氏名は以下の候補から選択し、候補にない氏名は出力しないでください。候補: ${rosterList}`,
     "各入居者は『排便』『排尿』『水分』の3行が1セットで並び、各カテゴリ行の右方向に 0..23 の時間列が続きます。",
     "0..23 の各列について、セルが空でない場合は必ず events に 1 件として出力してください（空欄は出力しない）。",
     "『合計』『計』『凡例』などの見出し列・右端の合計列は events に含めないでください。",
@@ -243,12 +289,14 @@ async function callGptVision(imageUrl: string, sheetHintISO: string) {
       type: "text",
       text: "次の画像から表の内容を抽出し、指定スキーマの JSON を返してください。各カテゴリ行の 0..23 の空でないセルを漏れなく events に含め、合計や凡例は無視してください。返答は JSON のみで、説明やスキーマは不要です。",
     },
-    { type: "image_url", image_url: { url: imageUrl } },
+    { type: "image_url", image_url: { url: imageUrl, detail: "high" } },
   ];
 
-  const supportsCustomTemperature = !/^gpt-5/i.test(OPENAI_VISION_MODEL);
+  // Force model to gpt-4o for best structured extraction stability
+  const model = "gpt-4o";
+  const supportsCustomTemperature = !/^gpt-5/i.test(model);
   const body: any = {
-    model: OPENAI_VISION_MODEL,
+    model,
     response_format: {
       type: "json_schema",
       json_schema: { name: "CareSheet", schema: SCHEMA },
@@ -257,11 +305,14 @@ async function callGptVision(imageUrl: string, sheetHintISO: string) {
       { role: "system", content: system },
       { role: "user", content: userParts as any },
     ],
+    top_p: LLM_TOP_P,
+    seed: LLM_SEED,
   };
-  if (supportsCustomTemperature) body.temperature = 0.1;
-  if (LLM_HIGH_ACCURACY && (LLM_MAX_TOKENS || 1))
-    body.max_tokens = LLM_MAX_TOKENS ?? 8192;
-  if (LLM_HIGH_ACCURACY && (LLM_N || 0) > 1) body.n = LLM_N ?? 3;
+  // Apply low temperature only when the model supports custom temperature
+  if (supportsCustomTemperature) body.temperature = LLM_TEMPERATURE;
+  // Do not set max_tokens at all by default (no restriction)
+  // Multi-sampling gated behind explicit env toggle (independent of high-accuracy)
+  if (LLM_ENABLE_MULTI_CHOICE && (LLM_N || 0) > 1) body.n = LLM_N ?? 3;
 
   // First attempt
   const http = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -332,9 +383,17 @@ async function callGptVision(imageUrl: string, sheetHintISO: string) {
     }
   }
 
-  // Fallback attempt with json_object if empty
+  // Validate against schema; retry once if invalid or empty
+  const ajv = new Ajv({ allErrors: true, strict: false });
+  const validate = ajv.compile(SCHEMA as any);
+  let isValid = false;
+  if (parsed && Object.keys(parsed).length > 0) {
+    isValid = validate(parsed) as boolean;
+  }
+
+  // Fallback attempt with json_object if empty or invalid
   let fallback: any = null;
-  if (!parsed || Object.keys(parsed).length === 0) {
+  if (!parsed || Object.keys(parsed).length === 0 || !isValid) {
     const fallbackBody = {
       ...body,
       response_format: { type: "json_object" as const },
@@ -387,6 +446,11 @@ async function callGptVision(imageUrl: string, sheetHintISO: string) {
           parseStrategy = "recovered";
         }
       }
+      try {
+        isValid = parsed && validate(parsed as any);
+      } catch (_) {
+        isValid = false;
+      }
       fallback = {
         http_status: http_status2,
         id: res2?.id,
@@ -402,10 +466,18 @@ async function callGptVision(imageUrl: string, sheetHintISO: string) {
 
   const raw = {
     id: res?.id,
-    model: OPENAI_VISION_MODEL,
+    model,
     usage: res?.usage,
     error: res?.error,
     http_status,
+    params: {
+      temperature: body?.temperature ?? null,
+      max_tokens: body?.max_tokens ?? null,
+      n: body?.n ?? 1,
+      enable_multi_choice: !!LLM_ENABLE_MULTI_CHOICE,
+      top_p: LLM_TOP_P,
+      seed: LLM_SEED ?? null,
+    },
     text_preview: (() => {
       try {
         const c = choices?.[0]?.message?.content ?? "";
@@ -422,7 +494,7 @@ async function callGptVision(imageUrl: string, sheetHintISO: string) {
   if (raw.error) {
     console.error("OpenAI error:", raw.error);
   }
-  return { parsed, raw };
+  return { parsed, raw, isValid };
 }
 
 // ========= HTTP =========
@@ -432,7 +504,11 @@ serve(async (req) => {
     return new Response("ok", { headers: corsHeaders });
   }
   try {
-    let payload: { storagePath?: string; sourceDocId?: string } | null = null;
+    let payload: {
+      storagePath?: string;
+      sourceDocId?: string;
+      model?: string | null;
+    } | null = null;
     try {
       payload = await req.json();
     } catch (_) {
@@ -442,7 +518,7 @@ serve(async (req) => {
       });
     }
 
-    const { storagePath, sourceDocId } = payload ?? {};
+    const { storagePath, sourceDocId, model } = payload ?? {};
     if (!storagePath)
       return new Response("storagePath required", {
         status: 400,
@@ -484,8 +560,12 @@ serve(async (req) => {
     const inferred = inferDateFromPath(storagePath);
     const sheetHintISO = inferred ?? new Date().toISOString().slice(0, 10);
 
-    // GPT Vision 呼び出し
-    const { parsed, raw } = await callGptVision(imageUrl, sheetHintISO);
+    // GPT Vision 呼び出し（単発）
+    const { parsed, raw, isValid } = await callGptVision(
+      imageUrl,
+      sheetHintISO,
+      model
+    );
     // 応答形状差異に対応（直下 or properties 配下）
     const events: any[] = Array.isArray((parsed as any)?.events)
       ? (parsed as any).events
@@ -580,6 +660,7 @@ serve(async (req) => {
             events_count: eventsCount,
             normalized_count: normalizedCount,
             rows_count: rowsCount,
+            schema_valid: isValid ?? null,
           },
           parsed_alt: patientsView,
         },
