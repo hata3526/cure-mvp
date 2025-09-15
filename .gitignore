@@ -1,3 +1,48 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+
+# Vite / TypeScript
+.vite/
+*.tsbuildinfo
+
+# Logs
+logs
+*.log
+*.log.*
+*.gz
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Editors / IDE
+.vscode/
+.idea/
+
+# Supabase local artifacts
+supabase/.temp/
+supabase/.branches/
+
+# Coverage
+coverage/
+*.coverage
+
+# Misc
+*.swp
+*.swo
 # Logs
 logs
 *.log
