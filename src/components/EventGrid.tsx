@@ -218,7 +218,10 @@ export function EventGrid({
           className="grid grid-cols-[160px_64px_repeat(24,minmax(0,1fr))] items-stretch gap-1"
         >
           <div className="text-sm text-muted-foreground pr-2 flex items-center">
-            {key}
+            {(() => {
+              const [resident, cat] = key.split("｜");
+              return `${resident}｜${labelOf(cat as CareEvent["category"])}`;
+            })()}
           </div>
           <div className="h-8 rounded-sm bg-muted text-[11px] flex items-center justify-center">
             {getRowTotal(index, key) || ""}
@@ -239,7 +242,7 @@ export function EventGrid({
                 <DialogContent>
                   <DialogHeader>
                     <DialogTitle>
-                      編集 {key} @{h}
+                      編集 {(() => { const [resident, cat] = key.split("｜"); return `${resident}｜${labelOf(cat as CareEvent["category"])}`; })()} @{h}
                     </DialogTitle>
                   </DialogHeader>
                   <div className="grid gap-3">
@@ -341,4 +344,17 @@ function getRowTotal(index: Map<string, Map<number, CareEvent>>, key: string) {
   let total = 0;
   for (const v of row.values()) total += v.count ?? 0;
   return total;
+}
+
+function labelOf(cat: CareEvent["category"]) {
+  switch (cat) {
+    case "urination":
+      return "排尿";
+    case "defecation":
+      return "排便";
+    case "fluid":
+      return "水分";
+    default:
+      return String(cat);
+  }
 }

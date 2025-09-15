@@ -223,6 +223,92 @@ function extractJsonFromText(text: string): any | null {
   return null;
 }
 
+// Try to extract a plain string text from a Responses API result
+function extractTextFromResponses(resp: any): string | null {
+  try {
+    if (!resp) return null;
+    if (typeof resp.output_text === "string" && resp.output_text.length > 0) {
+      return resp.output_text;
+    }
+    const texts: string[] = [];
+    const collect = (n: any) => {
+      if (!n) return;
+      if (typeof n === "string") return; // avoid capturing ids/keys blindly
+      if (typeof n?.text === "string") {
+        texts.push(n.text);
+        return;
+      }
+      if (Array.isArray(n)) {
+        for (const it of n) collect(it);
+      } else if (typeof n === "object") {
+        // Responses blocks
+        if (n.type === "output_text" && typeof n.text === "string") {
+          texts.push(n.text);
+        }
+        if (n.type === "message" && Array.isArray(n.content)) {
+          for (const c of n.content) collect(c);
+        }
+        if (Array.isArray(n.output)) collect(n.output);
+        if (Array.isArray(n.content)) collect(n.content);
+        // generic object walk for nested arrays/objects
+        for (const k of Object.keys(n)) {
+          const v = (n as any)[k];
+          if (k === "id" && typeof v === "string") continue;
+          if (typeof v === "string") continue;
+          collect(v);
+        }
+      }
+    };
+    collect(resp);
+    return texts.length ? texts.join("\n").slice(0, 32000) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function extractParsedFromResponses(resp: any): any | null {
+  try {
+    if (!resp) return null;
+    if (resp.output_parsed) return resp.output_parsed;
+    const scan = (n: any): any | null => {
+      if (!n) return null;
+      if (Array.isArray(n)) {
+        for (const it of n) {
+          const r = scan(it);
+          if (r) return r;
+        }
+        return null;
+      }
+      if (typeof n === "object") {
+        if (
+          (n.type === "output_parsed" || n.type === "json_schema") &&
+          n.parsed !== undefined
+        ) {
+          return n.parsed;
+        }
+        if (n.parsed && typeof n.parsed === "object") return n.parsed;
+        // traverse common containers
+        if (Array.isArray((n as any).output)) {
+          const r = scan((n as any).output);
+          if (r) return r;
+        }
+        if (Array.isArray((n as any).content)) {
+          const r = scan((n as any).content);
+          if (r) return r;
+        }
+        for (const k of Object.keys(n)) {
+          const r = scan((n as any)[k]);
+          if (r) return r;
+        }
+      }
+      return null;
+    };
+    return scan(resp);
+  } catch (_) {
+    return null;
+  }
+}
+
 async function callGptVision(
   imageUrl: string,
   sheetHintISO: string,
@@ -270,16 +356,16 @@ async function callGptVision(
   const roster = await fetchResidents();
   const rosterList = roster.map((r: any) => r.display_name).join(", ");
   const system = [
-    "あなたは画像から、介護施設の『排尿・排便・水分』記録表を抽出し正規化するアシスタントです。",
-    "表は 0〜23 時（24列）です。右端の『合計』列は events に含めないでください。",
-    "セルの記号: 数字=そのまま count、✓=guided:true、△=incontinence:true。'2✓△' は count=2, guided:true, incontinence:true。",
-    "カテゴリ: 排尿→urination、排便→defecation、水分→fluid。必要に応じて note を使ってください。",
-    `date_iso は見出しに『YYYY 年 M 月 D 日』があればそれを優先、無ければ既定日(${sheetHintISO})を使ってください。`,
-    "推測での補完は禁止。ただし読み取れた範囲で部分的な行でも出力してください。",
+    "この画像には『排泄・水分チェック表（単日）』が含まれています。次のルールで表データを抽出し正規化してください。",
+    "表の構造: 左端に『名前』『種類』列があり、その右に 0〜23 時（24列）が並びます。1人あたりの行は『排便』『排尿』『水分』の3行の順です。",
+    "日付抽出: 見出し（右上など）に『YYYY年M月D日』があればそれを優先し、無ければ既定日を使用します。",
+    `既定日: ${sheetHintISO}（見出しから抽出できない場合に使用）`,
+    "記録ルール（厳格）: 排便・排尿は該当時刻セルに『1』が書かれている場合のみ記録対象（『1』以外の記号・数字・文字は無効として無視、空欄は未記録）。",
+    "記録ルール（厳格）: 水分は該当時刻セルに ml の整数値のみを記録対象（単位や記号は除去し数値化。例: '200ml' → 200）。空欄は未記録。",
+    "カテゴリ: 排便→defecation、排尿→urination、水分→fluid。",
     `氏名は以下の候補から選択し、候補にない氏名は出力しないでください。候補: ${rosterList}`,
-    "各入居者は『排便』『排尿』『水分』の3行が1セットで並び、各カテゴリ行の右方向に 0..23 の時間列が続きます。",
-    "0..23 の各列について、セルが空でない場合は必ず events に 1 件として出力してください（空欄は出力しない）。",
-    "『合計』『計』『凡例』などの見出し列・右端の合計列は events に含めないでください。",
+    "0..23 の各時間列について、セルが空でない場合のみ events に 1 件として出力してください（空欄は出力しない）。",
+    "『合計』『計』『凡例』などの見出しや右端の合計列は events に含めないでください。",
     "名前はグリッド左側の氏名欄から取得し、同じ入居者の全カテゴリ行に継承してください。",
     "返答はデータ本体の JSON のみ。説明文・コードブロック・スキーマ定義は返さないでください。",
   ].join("\n");
@@ -287,7 +373,7 @@ async function callGptVision(
   const userParts = [
     {
       type: "text",
-      text: "次の画像から表の内容を抽出し、指定スキーマの JSON を返してください。各カテゴリ行の 0..23 の空でないセルを漏れなく events に含め、合計や凡例は無視してください。返答は JSON のみで、説明やスキーマは不要です。",
+      text: "画像内の『排泄・水分チェック表（単日）』から、上記ルールに従って内容を抽出し、指定スキーマの JSON を返してください。各カテゴリ行の 0..23 の空でないセルのみを events に含め、合計や凡例は無視してください。返答は JSON のみで、説明やスキーマは不要です。",
     },
     { type: "image_url", image_url: { url: imageUrl, detail: "high" } },
   ];
@@ -497,6 +583,234 @@ async function callGptVision(
   return { parsed, raw, isValid };
 }
 
+// GPT with PDF (Responses API + Files)
+async function callGptPdf(
+  pdfUrl: string,
+  sheetHintISO: string,
+  overrideModel?: string | null
+) {
+  const SCHEMA = {
+    type: "object",
+    properties: {
+      sheet: {
+        type: "object",
+        properties: {
+          date_iso: { type: "string" },
+          title: { type: ["string", "null"] },
+          facility: { type: ["string", "null"] },
+        },
+        // Responses API strict mode: include every key listed in properties
+        required: ["date_iso", "title", "facility"],
+        additionalProperties: false,
+      },
+      events: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            resident_name: { type: "string" },
+            category: {
+              type: "string",
+              enum: ["urination", "defecation", "fluid"],
+            },
+            hour: { type: "integer", minimum: 0, maximum: 23 },
+            count: { type: "integer", minimum: 1, default: 1 },
+            guided: { type: "boolean", default: false },
+            incontinence: { type: "boolean", default: false },
+            note: { type: ["string", "null"] },
+            confidence: { type: "number", minimum: 0, maximum: 1 },
+          },
+          // Strict mode: include all keys in properties so each field appears (null allowed)
+          required: [
+            "resident_name",
+            "category",
+            "hour",
+            "count",
+            "guided",
+            "incontinence",
+            "note",
+            "confidence",
+          ],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["sheet", "events"],
+    additionalProperties: false,
+  } as const;
+
+  const roster = await fetchResidents();
+  const rosterList = roster.map((r: any) => r.display_name).join(", ");
+  const system = [
+    "このPDFには『排泄・水分チェック表（単日）』が含まれています。次のルールで表データを抽出し正規化してください。",
+    "表の構造: 左端に『名前』『種類』列があり、その右に 0〜23 時（24列）が並びます。1人あたりの行は『排便』『排尿』『水分』の3行の順です。",
+    "日付抽出: 見出し（右上など）に『YYYY年M月D日』があればそれを優先し、無ければ既定日を使用します。",
+    `既定日: ${sheetHintISO}（見出しから抽出できない場合に使用）`,
+    "記録ルール（厳格）: 排便・排尿は該当時刻セルに『1』が書かれている場合のみ記録対象（『1』以外は無視、空欄は未記録）。",
+    "記録ルール（厳格）: 水分は該当時刻セルに ml の整数値のみ（単位・記号は除去、例: '200ml' → 200）。空欄は未記録。",
+    "カテゴリ: 排便→defecation、排尿→urination、水分→fluid。",
+    `氏名は以下の候補から選択し、候補にない氏名は出力しないでください。候補: ${rosterList}`,
+    "0..23 の各時間列について、セルが空でない場合のみ events に 1 件として出力（空欄は出力しない）。",
+    "『合計』『計』『凡例』などの見出しや右端の合計列は events に含めないでください。",
+    "名前はグリッド左側の氏名欄から取得し、同じ入居者の全カテゴリ行に継承してください。",
+    "返答はデータ本体の JSON のみ。説明文・コードブロック・スキーマ定義は返さないでください。",
+  ].join("\n");
+
+  // Download the PDF bytes from storage
+  const fileRes = await fetch(pdfUrl);
+  if (!fileRes.ok) throw new Error(`Failed to fetch PDF: ${fileRes.status}`);
+  const pdfBlob = await fileRes.blob();
+
+  // Upload to OpenAI Files API
+  const fd = new FormData();
+  fd.append(
+    "file",
+    new File([pdfBlob], "document.pdf", { type: "application/pdf" })
+  );
+  // assistants purpose is accepted by Responses API for inputs
+  fd.append("purpose", "assistants");
+
+  const upload = await fetch("https://api.openai.com/v1/files", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+    body: fd,
+  });
+  const upload_status = upload.status;
+  const uploaded = await upload.json();
+  if (!upload.ok) {
+    throw new Error(
+      `OpenAI file upload failed: ${upload_status} ${
+        uploaded?.error?.message ?? ""
+      }`
+    );
+  }
+  const file_id = uploaded?.id;
+  if (!file_id) throw new Error("OpenAI file upload missing id");
+
+  const model = "gpt-4o"; // stable for structured extraction
+  const supportsCustomTemperature = !/^gpt-5/i.test(model);
+  const body: any = {
+    model,
+    // Responses API uses text.format with required name + schema for json_schema
+    text: {
+      format: {
+        type: "json_schema",
+        name: "CareSheet",
+        schema: SCHEMA,
+      },
+    },
+    input: [
+      { role: "system", content: [{ type: "input_text", text: system }] },
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: "PDFに含まれる『排泄・水分チェック表（単日）』から、上記ルールに従って抽出し、指定スキーマの JSON を返してください。",
+          },
+          { type: "input_file", file_id },
+        ],
+      },
+    ],
+    top_p: LLM_TOP_P,
+    seed: LLM_SEED,
+  };
+  if (supportsCustomTemperature) body.temperature = LLM_TEMPERATURE;
+
+  const http = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify(body),
+  });
+  const http_status = http.status;
+  let res: any = null;
+  try {
+    res = await http.json();
+  } catch (_) {
+    const txt = await http.text();
+    res = {
+      error: {
+        message: "Non-JSON response",
+        text_preview: txt?.slice(0, 1200),
+      },
+    };
+  }
+
+  // Parse structured output or text → JSON
+  let parsed: any = {};
+  let parseStrategy: "direct" | "recovered" | "empty" = "empty";
+  try {
+    // Prefer structured parsed output when available
+    const maybeParsed = extractParsedFromResponses(res);
+    if (maybeParsed && typeof maybeParsed === "object") {
+      parsed = maybeParsed;
+      parseStrategy = "direct";
+    } else {
+      const text = extractTextFromResponses(res) ?? "";
+      if (text) {
+        try {
+          parsed = JSON.parse(text);
+          parseStrategy = "direct";
+        } catch (_) {
+          const rec = extractJsonFromText(text);
+          if (rec) {
+            parsed = rec;
+            parseStrategy = "recovered";
+          }
+        }
+      }
+    }
+  } catch (_) {
+    // ignored
+  }
+
+  // Validate against schema
+  const ajv = new Ajv({ allErrors: true, strict: false });
+  const validate = ajv.compile(SCHEMA as any);
+  let isValid = false;
+  if (parsed && Object.keys(parsed).length > 0) {
+    try {
+      isValid = validate(parsed) as boolean;
+    } catch (_) {
+      isValid = false;
+    }
+  }
+
+  const raw = {
+    id: res?.id,
+    model,
+    http_status,
+    file_id,
+    upload_status,
+    error: res?.error,
+    params: {
+      temperature: body?.temperature ?? null,
+      top_p: LLM_TOP_P,
+      seed: LLM_SEED ?? null,
+    },
+    text_preview: (() => {
+      try {
+        const t = extractTextFromResponses(res) ?? "";
+        return typeof t === "string" ? t.slice(0, 1200) : null;
+      } catch {
+        return null;
+      }
+    })(),
+    response_snapshot: (() => {
+      try {
+        return JSON.stringify(res).slice(0, 6000);
+      } catch {
+        return null;
+      }
+    })(),
+  } as const;
+  if (raw.error) console.error("OpenAI responses error:", raw.error);
+  return { parsed, raw, isValid };
+}
+
 // ========= HTTP =========
 serve(async (req) => {
   const corsHeaders = getCorsHeaders(req);
@@ -508,6 +822,7 @@ serve(async (req) => {
       storagePath?: string;
       sourceDocId?: string;
       model?: string | null;
+      append?: boolean;
     } | null = null;
     try {
       payload = await req.json();
@@ -518,7 +833,7 @@ serve(async (req) => {
       });
     }
 
-    const { storagePath, sourceDocId, model } = payload ?? {};
+    const { storagePath, sourceDocId, model, append } = payload ?? {};
     if (!storagePath)
       return new Response("storagePath required", {
         status: 400,
@@ -547,7 +862,7 @@ serve(async (req) => {
         "Public URL not available. Ensure bucket is Public and path is correct."
       );
     }
-    // 画像URLの疎通確認（診断用）
+    // 画像/ファイルURLの疎通確認（診断用）
     let imageHeadStatus: number | null = null;
     try {
       const head = await fetch(imageUrl, { method: "HEAD" });
@@ -560,12 +875,11 @@ serve(async (req) => {
     const inferred = inferDateFromPath(storagePath);
     const sheetHintISO = inferred ?? new Date().toISOString().slice(0, 10);
 
-    // GPT Vision 呼び出し（単発）
-    const { parsed, raw, isValid } = await callGptVision(
-      imageUrl,
-      sheetHintISO,
-      model
-    );
+    // GPT 呼び出し（画像 or PDF）
+    const isPdf = /\.pdf(?:$|\?)/i.test(path);
+    const { parsed, raw, isValid } = isPdf
+      ? await callGptPdf(imageUrl, sheetHintISO, model)
+      : await callGptVision(imageUrl, sheetHintISO, model);
     // 応答形状差異に対応（直下 or properties 配下）
     const events: any[] = Array.isArray((parsed as any)?.events)
       ? (parsed as any).events
@@ -632,12 +946,23 @@ serve(async (req) => {
 
     let inserted = 0;
     if (rows.length) {
-      // Replace existing rows for this source_doc_id
-      const { error: delErr } = await supabase
+      // Overwrite-by-date: ensure the target date has no records from other source docs
+      // Keep rows from this source_doc_id to support multi-page append
+      const { error: dateDelErr } = await supabase
         .from("care_events")
         .delete()
-        .eq("source_doc_id", docId!);
-      if (delErr) throw delErr;
+        .eq("event_date", dateISO)
+        .neq("source_doc_id", docId!);
+      if (dateDelErr) throw dateDelErr;
+
+      if (!append) {
+        // Clean any prior rows for this source_doc_id (re-run safety)
+        const { error: delErr } = await supabase
+          .from("care_events")
+          .delete()
+          .eq("source_doc_id", docId!);
+        if (delErr) throw delErr;
+      }
 
       const { error: insErr } = await supabase.from("care_events").insert(rows);
       if (insErr) throw insErr;

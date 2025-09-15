@@ -20,3 +20,9 @@ entrypoint = "./functions/parse-structure/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/parse-structure/*.html" ]
+
+[functions.cleanup-care-events]
+enabled = true
+verify_jwt = false
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/cleanup-care-events/index.ts"

@@ -6,7 +6,7 @@ function Header() {
   return (
     <header className="sticky top-0 z-40 w-full border-b bg-background">
       <div className="mx-auto flex max-w-7xl items-center justify-between px-4 md:px-6 py-3">
-        <Link to="/dashboard" className="font-semibold">
+          <Link to="/" className="font-semibold">
           ケア記録
         </Link>
         <nav className="flex items-center gap-2">
@@ -32,10 +32,10 @@ function Header() {
               isActive ? "text-primary" : "text-muted-foreground"
             }
           >
-            設定
+            入居者一覧
           </NavLink>
           <Button asChild variant="secondary" size="sm">
-            <Link to="/review/new">レビュー</Link>
+            <Link to="/review/new">管理者画面</Link>
           </Button>
           <ThemeToggle />
         </nav>

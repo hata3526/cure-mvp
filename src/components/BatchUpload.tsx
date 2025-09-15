@@ -1,16 +1,10 @@
 import { useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
 import { Button } from "./ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "./ui/select";
+// Model/provider are fixed; select UI not used
 
-type Provider = "vision" | "gpt";
-type Model = "gpt-5-mini" | "gpt-5" | "gpt-5-nano" | "gpt-4o" | "gpt-4o-mini";
+// Provider selection removed; always use GPT ingest
+type Model = "gpt-4o";
 
 type Item = {
   id: string;
@@ -39,8 +33,8 @@ export function BatchUpload({
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [items, setItems] = useState<Item[]>([]);
-  const [provider, setProvider] = useState<Provider>("vision");
-  const [model, setModel] = useState<Model>("gpt-4o");
+  const provider = "gpt" as const;
+  const model: Model = "gpt-4o";
   const [isRunning, setIsRunning] = useState(false);
 
   const totals = useMemo(() => {
@@ -108,7 +102,7 @@ export function BatchUpload({
 
     // 2) ingest (and maybe parse)
     updateItem(id, { status: "ingesting" });
-    const fn = provider === "gpt" ? "ingest-gpt" : "ingest-ocr";
+    const fn = "ingest-gpt" as const;
     const { data: ingData, error: ingErr } = await supabase.functions.invoke(
       fn,
       {
@@ -125,28 +119,8 @@ export function BatchUpload({
     const sourceDocId = (ingData as any)?.sourceDocId as string | undefined;
     const inserted = (ingData as any)?.inserted as number | undefined;
 
-    if (provider === "vision") {
-      // 3) parse-structure for OCR flow
-      updateItem(id, { status: "parsing" });
-      const { data: pData, error: pErr } = await supabase.functions.invoke(
-        "parse-structure",
-        {
-          body: { sourceDocId, model },
-        }
-      );
-      if (pErr) {
-        updateItem(id, { status: "error", error: String(pErr) });
-        return;
-      }
-      updateItem(id, {
-        status: "done",
-        sourceDocId: sourceDocId,
-        inserted: (pData as any)?.inserted,
-      });
-    } else {
-      // GPT flow already extracted
-      updateItem(id, { status: "done", sourceDocId, inserted });
-    }
+    // GPT flow already extracted
+    updateItem(id, { status: "done", sourceDocId, inserted });
   };
 
   const updateItem = (id: string, patch: Partial<Item>) => {
@@ -167,33 +141,7 @@ export function BatchUpload({
       />
 
       <div className="flex flex-wrap items-end gap-3">
-        <div className="space-y-1">
-          <label className="text-sm text-muted-foreground">プロバイダ</label>
-          <Select value={provider} onValueChange={(v) => setProvider(v as Provider)}>
-            <SelectTrigger className="w-48">
-              <SelectValue placeholder="選択" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="vision">Google Vision OCR</SelectItem>
-              <SelectItem value="gpt">GPT Vision (抽出まで)</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1">
-          <label className="text-sm text-muted-foreground">GTPモデル</label>
-          <Select value={model} onValueChange={(v) => setModel(v as Model)}>
-            <SelectTrigger className="w-56">
-              <SelectValue placeholder="モデル選択" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="gpt-5-mini">gpt-5-mini</SelectItem>
-              <SelectItem value="gpt-5">gpt-5</SelectItem>
-              <SelectItem value="gpt-5-nano">gpt-5-nano</SelectItem>
-              <SelectItem value="gpt-4o">gpt-4o</SelectItem>
-              <SelectItem value="gpt-4o-mini">gpt-4o-mini</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
+        {/* モデル/プロバイダ選択は非表示（gpt-4o固定） */}
         <Button variant="outline" onClick={pickFiles}>PDFを選択</Button>
         <Button onClick={runAll} disabled={isRunning || items.length === 0}>
           {isRunning ? "取り込み中..." : "取り込み開始"}
@@ -277,7 +225,7 @@ export function BatchUpload({
 
       <div className="text-xs text-muted-foreground">
         ・アップロード先バケット: originals（自動作成はされません）
-        <br />・GPTを選択すると取り込みと解析が同時に行われます
+        <br />・取り込みと解析は自動で同時に行われます（GPT）
       </div>
     </div>
   );

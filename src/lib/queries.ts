@@ -8,6 +8,7 @@ const qk = {
   totals: (range: DateRange) => ["totals", range] as const,
   heatmap: (range: DateRange) => ["heatmap", range] as const,
   review: (sourceDocId: string) => ["review", sourceDocId] as const,
+  events: (range: DateRange) => ["events", range] as const,
   sourceDoc: (id: string) => ["sourceDoc", id] as const,
 };
 
@@ -22,6 +23,59 @@ export function useResidents() {
         .order("full_name", { ascending: true });
       if (error) throw error;
       return (data ?? []) as Resident[];
+    },
+  });
+}
+
+/** Create a resident */
+export function useCreateResident() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: { full_name: string }): Promise<Resident> => {
+      const { data, error } = await supabase
+        .from("residents")
+        .insert({ full_name: payload.full_name })
+        .select("id, full_name")
+        .single();
+      if (error) throw error;
+      return data as Resident;
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: qk.residents });
+    },
+  });
+}
+
+/** Update resident full_name */
+export function useUpdateResident() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: { id: string; full_name: string }): Promise<void> => {
+      const { error } = await supabase
+        .from("residents")
+        .update({ full_name: payload.full_name })
+        .eq("id", payload.id);
+      if (error) throw error;
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: qk.residents });
+    },
+  });
+}
+
+/** Delete resident by id */
+export function useDeleteResident() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string): Promise<void> => {
+      const { error } = await supabase
+        .from("residents")
+        .delete()
+        .eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: qk.residents });
     },
   });
 }
@@ -118,6 +172,47 @@ export function useReviewRows(sourceDocId: string) {
   });
 }
 
+/** Raw events within a date range for KPI/stat computation */
+export function useEventsRange(range: DateRange) {
+  return useQuery({
+    queryKey: qk.events(range),
+    queryFn: async (): Promise<CareEvent[]> => {
+      const { data, error } = await supabase
+        .from("care_events")
+        .select(
+          "source_doc_id,resident_name,event_date,hour,category,count,guided,incontinence,value"
+        )
+        .gte("event_date", range.from)
+        .lte("event_date", range.to);
+      if (error) throw error;
+      return (data ?? []) as CareEvent[];
+    },
+  });
+}
+
+/** Events for a single resident within a date range */
+export function useResidentEvents(residentName: string | undefined, range: DateRange) {
+  return useQuery({
+    queryKey: ["residentEvents", residentName ?? "", range] as const,
+    enabled: !!residentName,
+    queryFn: async (): Promise<CareEvent[]> => {
+      if (!residentName) return [];
+      const { data, error } = await supabase
+        .from("care_events")
+        .select(
+          "source_doc_id,resident_name,event_date,hour,category,count,guided,incontinence,value"
+        )
+        .eq("resident_name", residentName)
+        .gte("event_date", range.from)
+        .lte("event_date", range.to)
+        .order("event_date", { ascending: true })
+        .order("hour", { ascending: true });
+      if (error) throw error;
+      return (data ?? []) as CareEvent[];
+    },
+  });
+}
+
 /** Fetch single source doc and derive a URL for preview */
 export function useSourceDoc(id: string) {
   return useQuery({
@@ -174,15 +269,18 @@ export function useIngest() {
     mutationFn: async (payload: {
       storagePath: string;
       sourceDocId?: string;
-      provider: "vision" | "gpt";
+      provider?: "vision" | "gpt"; // deprecated: always uses gpt
       model?: "gpt-5-mini" | "gpt-5" | "gpt-5-nano" | "gpt-4o" | "gpt-4o-mini";
+      append?: boolean;
     }) => {
-      const fn = payload.provider === "gpt" ? "ingest-gpt" : "ingest-ocr";
+      // Force GPT ingest path; Vision OCR is temporarily disabled
+      const fn = "ingest-gpt" as const;
       const { data, error } = await supabase.functions.invoke(fn, {
         body: {
           storagePath: payload.storagePath,
           sourceDocId: payload.sourceDocId,
           model: payload.model,
+          append: payload.append ?? false,
         },
       });
       if (error) throw error;
@@ -249,6 +347,27 @@ export function useDeleteCareEvent() {
     },
     onSuccess: async (_d, variables) => {
       await qc.invalidateQueries({ queryKey: qk.review(variables.source_doc_id) });
+    },
+  });
+}
+
+/** Cleanup: delete all care_events via Edge Function */
+export function useCleanupCareEvents() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (): Promise<{ ok: boolean; deleted?: number }> => {
+      const { data, error } = await supabase.functions.invoke(
+        "cleanup-care-events",
+        {
+          body: {},
+        }
+      );
+      if (error) throw error;
+      return data as { ok: boolean; deleted?: number };
+    },
+    onSuccess: async () => {
+      // Invalidate broadly relevant caches
+      await qc.invalidateQueries();
     },
   });
 }

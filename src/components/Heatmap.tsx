@@ -28,13 +28,29 @@ export function Heatmap({ cells }: { cells: HeatCell[] | undefined }) {
 
   return (
     <div className="space-y-4">
-      {entries.map(([label, row]) => (
+      {/* Hour header 0..23 */}
+      <div className="grid grid-cols-[160px_repeat(24,minmax(0,1fr))] items-stretch gap-1">
+        <div className="text-xs text-muted-foreground pr-2 flex items-center justify-start">
+          時刻
+        </div>
+        {Array.from({ length: 24 }, (_, h) => (
+          <div
+            key={h}
+            className="h-5 text-center text-[10px] leading-5 text-muted-foreground"
+          >
+            {h}
+          </div>
+        ))}
+      </div>
+      {entries.map(([key, row]) => (
         <div
-          key={label}
+          key={key}
           className="grid grid-cols-[160px_repeat(24,minmax(0,1fr))] items-stretch gap-1"
         >
           <div className="text-sm text-muted-foreground pr-2 flex items-center">
-            {label}
+            {row && row.length
+              ? `${row[0].resident_name}｜${labelOf(row[0].category)}`
+              : key}
           </div>
           {row.map((cell, i) => (
             <div
@@ -62,4 +78,17 @@ function intensity(v: number) {
   // Use CSS variables for color to keep consistent with design tokens.
   // Base color is primary; we render as semi-transparent overlay per intensity.
   return `hsla(var(--primary) / ${alpha})`;
+}
+
+function labelOf(cat: HeatCell["category"]) {
+  switch (cat) {
+    case "urination":
+      return "排尿";
+    case "defecation":
+      return "排便";
+    case "fluid":
+      return "水分";
+    default:
+      return String(cat);
+  }
 }
