@@ -115,14 +115,7 @@ export function UploadOcr({
     if (data?.publicUrl) setPublicUrl(data.publicUrl);
   };
 
-  const handleParse = async () => {
-    if (!lastSourceDocId()) return;
-    try {
-      await parse.mutateAsync({ sourceDocId: lastSourceDocId()!, model });
-    } catch {
-      void 0;
-    }
-  };
+  // 専用の解析ボタンを廃止したため、未使用の関数を削除
 
   const lastSourceDocId = () => {
     const data = ingest.data as { sourceDocId?: string } | undefined;

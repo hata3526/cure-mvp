@@ -33,7 +33,6 @@ export function BatchUpload({
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [items, setItems] = useState<Item[]>([]);
-  const provider = "gpt" as const;
   const model: Model = "gpt-4o";
   const [isRunning, setIsRunning] = useState(false);
 

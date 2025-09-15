@@ -10,7 +10,7 @@ import { PeriodPicker, getPresetRange } from "../components/PeriodPicker";
 import { Input } from "../components/ui/input";
 import { Heatmap } from "../components/Heatmap";
 import { ExportCsv } from "../components/ExportCsv";
-import { useHeatmap, useTotals, useEventsRange } from "../lib/queries";
+import { useHeatmap, useEventsRange } from "../lib/queries";
 import type { DateRange } from "../types";
 
 import {
@@ -21,7 +21,6 @@ import {
 
 export default function DashboardRoute() {
   const [range, setRange] = useState<DateRange>(() => getPresetRange("7d"));
-  const totals = useTotals(range);
   const heatmap = useHeatmap(range);
   const events = useEventsRange(range);
 
